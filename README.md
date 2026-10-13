@@ -1,221 +1,99 @@
-# ntfy for MicroPython
+# MicroPython Ntfy Client
 
-A single-file client for [ntfy](https://ntfy.sh), the HTTP pub/sub service. It can publish messages, fetch missed messages, and stream new messages live. That is enough to send alerts from a device and to control the device remotely.
+A lightweight, robust MicroPython client class for [ntfy.sh](https://ntfy.sh/) (or self-hosted ntfy servers). It allows microcontrollers (like ESP32, ESP8266, or Raspberry Pi Pico W running MicroPython) to easily send push notifications and poll for incoming messages.
 
-## How ntfy works
+## Features
 
-A topic is just a URL: `https://ntfy.sh/<topic>`.
+- **Lightweight & Compatible:** Works seamlessly with standard `requests` or MicroPython's `urequests`.
+- **Rich Notifications:** Support for custom titles, priorities (1 to 5), emojis/tags, and click-through URLs.
+- **Authentication Support:** Secure your requests using Access Tokens (Bearer) or Username/Password (Basic Auth).
+- **Polling Capability:** Fetch recent or unread messages from a topic directly on your device.
 
-- POST to it to publish.
-- GET `/json` on it to receive. The connection stays open and the server pushes messages as they arrive.
+---
 
-There is no account or setup on the public server. That also means **anyone who knows the topic name can read and publish to it.** Use a long random topic name, or self-host and use a token.
+## Installation
 
-## Install
+Simply copy the `Ntfy` class code into a file on your MicroPython device (e.g., `ntfy.py`) and import it when needed.
 
-Copy `ntfy.py` to the board:
+Ensure your microcontroller is connected to Wi-Fi and has access to `urequests` (usually built-in or installable via `upip`/`mip`).
 
-It needs `requests`. Most current firmware has it as `urequests`; if the import fails:
+---
 
-```python
-import mip
-mip.install("requests")
-```
+## Quick Start
 
-Connect to Wi-Fi before using it.
-
-## Quick start
+### 1. Sending a Simple Notification
 
 ```python
 from ntfy import Ntfy
 
-n = Ntfy("my-device-8f3k2x9q")
+# Initialize with your topic name
+client = Ntfy(topic="my_device_alerts")
 
-n.publish("Boot complete")
-
-for msg in n.subscribe():
-    print(msg["message"])
+# Send a basic message
+client.send("Hello from MicroPython!")
 ```
 
-## API
+### 2. Sending Advanced Notifications
 
-### `Ntfy(topic, server="https://ntfy.sh", token=None)`
-
-| Argument | Description |
-|----------|-------------|
-| `topic` | A topic name, or a list of names to receive from several topics at once. `publish()` always sends to the first one. |
-| `server` | Base URL. Change it to use a self-hosted server. Plain `http://` works and uses much less RAM than HTTPS. |
-| `token` | Access token for servers with access control. Sent as a Bearer token. |
-
-### `publish(message, title=None, priority=None, tags=None, click=None, delay=None, actions=None)`
-
-Sends a message. Returns the HTTP status code (`200` means success).
-
-| Argument | Description |
-|----------|-------------|
-| `message` | Message body (str). |
-| `title` | Notification title. ASCII only. |
-| `priority` | `1` (min) to `5` (max). Default is `3`. |
-| `tags` | List of tags. Known emoji names such as `"warning"` show as emoji in the app. |
-| `click` | URL opened when the notification is tapped. |
-| `delay` | Deliver later: `"30m"`, `"2h"`, or a Unix timestamp. |
-| `actions` | List of action buttons in ntfy's short format (see below). |
-
-### `poll(since="latest", **filters)`
-
-Fetches cached messages and returns a list of message dicts. Does not keep a connection open.
-
-`since` accepts:
-
-- `"latest"`: only the most recent message
-- a duration such as `"10m"` or `"1h"`
-- a Unix timestamp
-- a message ID: everything after that message
-- `"all"`: everything the server still has cached
-
-Large histories use a lot of RAM on a microcontroller. Prefer a short duration or a message ID over `"all"`.
-
-### `subscribe(since=None, keepalive=False, **filters)`
-
-A generator. Yields message dicts as they arrive. It ends when the connection closes, so it needs a reconnect loop (see below).
-
-- `since`: same values as `poll()`. Default is new messages only.
-- `keepalive`: if `True`, yields `None` each time the server sends a keepalive (about every 45 seconds). Use it to feed a watchdog.
-
-### Filters
-
-Both `poll()` and `subscribe()` accept filters. The server applies them, so unwanted messages never reach the device.
-
-| Filter | Example |
-|--------|---------|
-| `priority` | `priority=[4, 5]` |
-| `tags` | `tags="alarm"` |
-| `title` | `title="Reboot"` |
-| `message` | `message="restart"` |
-| `id` | `id="abc123"` |
-
-### Message dict
-
-Fields you will use most:
-
-| Key | Meaning |
-|-----|---------|
-| `id` | Unique message ID. Store it to resume with `since=`. |
-| `time` | Unix timestamp. |
-| `topic` | Topic the message came from. Useful when subscribed to several. |
-| `message` | Body text. |
-| `title`, `priority`, `tags` | Present only if set by the sender. |
-
-## Recipes
-
-### Remote control
+You can customize titles, priorities, tags, and click actions:
 
 ```python
-import machine
-from ntfy import Ntfy
-
-n = Ntfy("my-device-8f3k2x9q")
-
-for msg in n.subscribe():
-    cmd = msg["message"].strip()
-    if cmd == "reboot":
-        machine.reset()
-    elif cmd == "status":
-        n.publish("uptime ok", title="status")
-```
-
-Send commands from your phone or any shell:
-
-```
-curl -d "reboot" ntfy.sh/my-device-8f3k2x9q
-```
-
-Anyone with the topic name can send commands. Do not use this on a public topic for anything that matters.
-
-### Reconnect loop with catch-up
-
-`subscribe()` ends on any network drop. Remember the last message ID so nothing is missed.
-
-```python
-import time
-from ntfy import Ntfy
-
-n = Ntfy("my-device-8f3k2x9q")
-last = None
-
-while True:
-    try:
-        for msg in n.subscribe(since=last):
-            last = msg["id"]
-            print(msg["message"])
-    except Exception as e:
-        print("ntfy error:", e)
-    time.sleep(5)
-```
-
-### Catch up after a reboot
-
-After a reset `last` is lost. Fetch recent messages first:
-
-```python
-for msg in n.poll(since="10m"):
-    print(msg["message"])
-```
-
-### Watchdog
-
-A connection can die without the socket noticing. The server sends a keepalive every 45 seconds, so a watchdog longer than that detects a dead connection:
-
-```python
-from machine import WDT
-wdt = WDT(timeout=120000)
-
-for msg in n.subscribe(keepalive=True):
-    wdt.feed()
-    if msg is None:
-        continue
-    print(msg["message"])
-```
-
-If the connection dies, the keepalives stop, the watchdog is not fed, and the board resets.
-
-### Alert only on important messages
-
-```python
-for msg in n.subscribe(priority=[4, 5], tags="alarm"):
-    print(msg["message"])
-```
-
-### Action buttons
-
-Buttons appear on the notification in the ntfy app. The short format is `type, label, url, key=value`.
-
-```python
-n.publish(
-    "Router is down",
-    title="Alert",
-    priority=4,
-    actions=[
-        "view, Open router, http://192.168.0.1",
-        "http, Reboot ESP32, http://192.168.0.50/reboot, method=POST",
-    ],
+client.send(
+    message="Sensor temperature exceeded threshold: 42°C",
+    title="Warning: High Temp",
+    priority=4,                # Priority ranges from 1 (min) to 5 (urgent)
+    tags=["fire", "warning"],  # Emojis or keywords supported by ntfy
 )
 ```
 
-An `http` button makes the phone send the request when tapped. Your device needs to be reachable from the phone for that to work.
+### 3. Polling for Messages
 
-### Delayed message
+You can check your topic for incoming messages:
 
 ```python
-n.publish("Check the router", delay="30m")
+messages = client.poll()
+for msg in messages:
+    print("Received:", msg.get("message"))
 ```
 
-## Limits
+---
 
-- Not tested on every port or firmware version. If `stream=True` is not supported by your `requests`, update it with `mip`.
-- HTTPS streaming needs a lot of RAM. On `MemoryError`, call `gc.collect()` before connecting, or use `http://` with a self-hosted server on your LAN.
-- Header values must be ASCII. Put non-ASCII text in the message body, not in `title`.
-- `subscribe()` does not reconnect by itself.
-- `poll()` loads the whole response into memory.
-- Public ntfy.sh has rate limits.
-- Attachments and email forwarding are not implemented.
+## API Reference
+
+### `Ntfy(topic, server="https://ntfy.sh", token=None, user=None, password=None)`
+
+Initializes the client.
+
+- **`topic`** *(str)*: The default ntfy topic to publish/poll.
+- **`server`** *(str, optional)*: Base URL of the ntfy server (defaults to `"https://ntfy.sh"`).
+- **`token`** *(str, optional)*: Bearer token for authentication.
+- **`user`** *(str, optional)*: Username for basic authentication.
+- **`password`** *(str, optional)*: Password for basic authentication.
+
+---
+
+### `send(message, title=None, priority=None, tags=None, click=None, topic=None)`
+
+Publishes a push notification to the server.
+
+- **`message`** *(str)*: The body of the notification message.
+- **`title`** *(str, optional)*: Title of the notification.
+- **`priority`** *(int, optional)*: Priority level from `1` (min) to `5` (urgent).
+- **`tags`** *(str or list, optional)*: Tags or emojis (e.g., `"warning"` or `["rotating_light", "alert"]`).
+- **`click`** *(str, optional)*: URL to open when the notification is clicked.
+- **`topic`** *(str, optional)*: Override the default topic for this specific message.
+
+---
+
+### `poll(since=None)`
+
+Polls the topic for new messages.
+
+- **`since`** *(str, optional)*: Timestamp or message ID to poll since (defaults to tracking the last seen message ID).
+- **Returns:** A list of message dictionaries.
+
+---
+
+## License
+
+This project is open-source and free to use under the MIT License.
